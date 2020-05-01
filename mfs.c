@@ -23,6 +23,9 @@ void Open_File(char *filename);
 void print_info();
 void decimalToHex(int decimal_number);
 void ls();
+int count_cd_token(char *directory_input);
+char** tokenize_cd_input(char* directory_input, int *token_count);
+int attempt_to_cd(int argc, char **args);
 int cd(int index);
 void stat(int index);
 void get(char *filename, int index);
@@ -49,6 +52,8 @@ int8_t BPB_NumFATS;
 int32_t BPB_FATSz32; //size
 
 int root_cluster;
+int current_cluster;
+int previous_cluster;
 int in_root;
 
 typedef struct __attribute__((__packed__)) DirectoryEntry
@@ -200,34 +205,28 @@ int main(int argc, char **argv)
             {
                 fprintf(stderr, "Error: Needs file directory.\n");
             }
-            else if (strcmp(token[1], ".") == 0)
-            {
-                // Do nothing
-                continue;
-            }
             else
             {
-                int found;
-                int index = -1;
+                int input_count = 0;
+                // Parse
+                char **cd_inputs = tokenize_cd_input(token[1], &input_count);
 
-                found = compare(token[1], &index);
+                int successful = attempt_to_cd(input_count, cd_inputs);
 
-                if (found)
+                if (successful)
                 {
-                    int valid = cd(index);
-
-                    if (!valid)
-                    {
-                        fprintf(stderr, "Error: %s not a directory.\n", token[1]);
-                    }
+                    previous_cluster = current_cluster;
                 }
                 else
                 {
-                    if ( in_root && strcmp(token[1], "..") == 0 )
-                        continue;
-                    else
-                        fprintf(stderr, "Error: %s not found.\n", token[1]);
+                    // Display an error to the user
+                    fprintf(stderr, "Error: %s is either not a directory or not found.\n", token[1]);
+
+                    // fseek back to previous cluster
+                    fseek(fp, root_cluster, SEEK_SET);
+                    fread(&Dir[0], 16, sizeof(DirectoryEntry), fp);
                 }
+
             }
         }
 
@@ -427,6 +426,8 @@ void Open_File(char *filename)
     fseek(fp, root_cluster, SEEK_SET);
     fread(&Dir[0], 16, sizeof(DirectoryEntry), fp);
     in_root = 1;
+    current_cluster = root_cluster;
+    previous_cluster = current_cluster;
 }
 
 //this functions prints directory contents
@@ -528,6 +529,112 @@ void read_from_file(char *filename, int position, int num_bytes, int index)
     
 }
 
+int count_cd_token(char *directory_input)
+{
+    char temp[MAX_COMMAND_SIZE];
+    const char delimiter[2] = "/";
+    int result = 0;
+
+    strcpy(temp, directory_input);
+
+    char *token;
+
+    token = strtok(temp, delimiter);
+
+    while ( token != NULL )
+    {
+        result++;
+        token = strtok(NULL, delimiter);
+    }
+
+    return result;
+}
+
+char** tokenize_cd_input(char* directory_input, int *token_count)
+{
+    int i = 0;
+    int length = 0;
+    char temp[MAX_COMMAND_SIZE];
+    char *token;
+    const char delimiter[2] = "/";
+
+    (*token_count) = count_cd_token(directory_input);
+    char **result = malloc(sizeof(char *) * (*token_count));
+    
+    strcpy(temp, directory_input);
+
+    
+
+    token = strtok(temp, delimiter);
+
+    while ( i < (*token_count) && token != NULL )
+    {
+        // Get the length of the current name
+        // need to keep track of the total characters
+        // and to malloc the correct size needed for
+        // the array
+        length = (int) strlen( token );
+        
+        // Allocate and copy the name into the array
+        result[i] = (char*) malloc(length + 1);
+        strcpy( result[i++] , token );
+
+        // Get the next token
+        token = strtok(NULL, delimiter);
+    }
+
+    return result;
+
+}
+
+
+// Attempt to change directory
+int attempt_to_cd(int argc, char **args)
+{
+    
+    int i = 0;
+    int successful = 1;
+
+    while (i < argc && successful)
+    {    
+        int found;
+        int index = -1;
+
+        found = compare(args[i], &index);
+
+        if ( strcmp(args[i], ".") == 0 ) 
+        {
+            continue;
+            i++;
+        }
+        else if (found)
+        {
+            int valid = cd(index);
+
+            if (!valid)
+            {
+                successful = 0;
+            }
+            else
+                i++;
+        }      
+        else
+        {
+            if ( in_root && strcmp(args[i], "..") == 0 )
+            {
+                i++;
+                continue;
+            }
+            else
+            {
+                successful = 0;
+            }
+        }
+    }
+
+    return successful;
+}
+
 // Change the directory within the fat32 disk image
 int cd(int index)
 {
@@ -541,6 +648,7 @@ int cd(int index)
         if (Dir[index].DIR_FirstClusterLow == 0)
         {
             in_root = 1;
+            current_cluster = root_cluster;
             fseek(fp, root_cluster, SEEK_SET);
             fread(&Dir[0], 16, sizeof(DirectoryEntry), fp);
             return 1;
@@ -551,6 +659,7 @@ int cd(int index)
         // in_root to be false
         in_root = 0;
         int offset = LBAToOffset(Dir[index].DIR_FirstClusterLow);
+        current_cluster = root_cluster;
         fseek(fp, offset, SEEK_SET);
         fread(&Dir[0], 16, sizeof(DirectoryEntry), fp);
         return 1;
@@ -567,4 +676,3 @@ int LBAToOffset(int32_t sector)
 {
     return ((sector - 2) * BPB_BytesPerSec + root_cluster);
 }
-
